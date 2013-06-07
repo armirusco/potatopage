@@ -1,2 +1,4 @@
 *~
 *.pyc
+
+/object_managers/.DS_Store
