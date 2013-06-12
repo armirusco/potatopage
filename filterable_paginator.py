@@ -14,31 +14,38 @@ class CursorNotFound(Exception):
     pass
 
 class FilterablePaginator(Paginator):
-    def __init__(self, object_list, per_page, batch_size=1, readahead=True, *args, **kwargs):
+    def __init__(self, object_list, per_page, batch_size=1, *args, **kwargs):
 
         self._batch_size = batch_size
-        self._readahead = readahead
 
-        if not object_list.supports_cursors:
-            self._readahead = False
+        if 'readahead' in kwargs.keys():
+            raise TypeError('This paginator doesn\'t support the readahead argument.')
 
-        super(UnifiedPaginator, self).__init__(object_list, per_page, *args, **kwargs)
+        super(FilterablePaginator, self).__init__(object_list, per_page, *args, **kwargs)
 
     def _get_final_page(self):
-        key = "|".join([self.object_list.cache_key, "LAST_PAGE"])
+        final_obj = self._get_final_obj()
+        return int(ceil(final_obj/float(self.per_page)))
+
+    def _get_final_obj(self):
+        key = "|".join([self.object_list.cache_key, "LAST_OBJ"])
         return cache.get(key)
 
-    def _put_final_page(self, page):
-        key = "|".join([self.object_list.cache_key, "LAST_PAGE"])
-        cache.set(key, page)
+    def _put_final_obj(self, obj):
+        key = "|".join([self.object_list.cache_key, "LAST_OBJ"])
+        cache.set(key, obj)
 
     def _get_known_page_count(self):
-        key = "|".join([self.object_list.cache_key, "KNOWN_MAX"])
+        last_known_obj = self._get_known_obj_count()
+        return int(ceil(last_known_obj/float(self.per_page)))
+
+    def _get_known_obj_count(self):
+        key = "|".join([self.object_list.cache_key, "KNOWN_OBJ_COUNT"])
         return cache.get(key)
 
-    def _put_known_page_count(self, count):
-        key = "|".join([self.object_list.cache_key, "KNOWN_MAX"])
-        return cache.set(key, count)
+    def _put_known_obj_count(self, count):
+        key = "|".join([self.object_list.cache_key, "KNOWN_OBJ_COUNT"])
+        return cache.put(key, count)
 
     def _put_cursor(self, zero_based_obj, cursor):
         if not self.object_list.supports_cursors or cursor is None:
@@ -156,22 +163,13 @@ class FilterablePaginator(Paginator):
                 raise EmptyPage('That page contains no results')
 
         known_obj_count = int((start_index - offset) + batch_result_count)
-        known_page_count = ceil(known_obj_count / float(self.per_page))
 
-        # TODO: finish adjusting this function!
+        if known_obj_count >= self._get_known_obj_count():
+            if batch_result_count < self._batch_size:
+                # We reached the end of the object list.
+                self._put_final_obj(known_obj_count)
 
-        if known_page_count >= self._get_known_page_count():
-            if next_cursor and self._readahead:
-                if self.object_list.contains_more_objects(next_cursor):
-                    known_page_count += 1
-                else:
-                    self._put_final_page(known_page_count)
-            elif batch_result_count == self._batch_size * self.per_page:
-                # If we got back exactly the right amount, we assume there is at least
-                # one more page.
-                known_page_count += 1
-
-            self._put_known_page_count(known_page_count)
+            self._put_known_page_count(known_obj_count)
         return UnifiedPage(actual_results, number, self)
 
     def _get_count(self):
