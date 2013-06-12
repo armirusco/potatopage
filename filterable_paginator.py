@@ -172,7 +172,7 @@ class FilterablePaginator(Paginator):
                 self._put_final_obj(known_obj_count)
 
             self._put_known_page_count(known_obj_count)
-        return UnifiedPage(actual_results, number, self)
+        return FilteredPage(actual_results, number, self)
 
     def _get_count(self):
         raise NotImplemented("Not available in %s" % self.__class__.__name__)
@@ -181,9 +181,9 @@ class FilterablePaginator(Paginator):
         raise NotImplemented("Not available in %s" % self.__class__.__name__)
 
 
-class UnifiedPage(Page):
+class FilteredPage(Page):
     def __init__(self, object_list, number, paginator):
-        super(UnifiedPage, self).__init__(object_list, number, paginator)
+        super(FilteredPage, self).__init__(object_list, number, paginator)
 
     def __repr__(self):
         """ Overwrite paginator's repr, so no Exception gets thrown
@@ -207,7 +207,7 @@ class UnifiedPage(Page):
     def final_page_visible(self):
         return self.paginator._get_final_page() in self.available_pages()
 
-    def available_pages(self, limit_to_batch_size=True):
+    def available_pages(self):
         """
             Returns a list of sorted integers that represent the
             pages that should be displayed in the paginator. In relation to the
@@ -224,14 +224,12 @@ class UnifiedPage(Page):
             this will generally be the same for the upper count, but the results
             will always start at 1.
         """
-        min_page = (self.number - self.paginator._batch_size) if limit_to_batch_size else 1
-        if min_page < 1:
-            min_page = 1
-
-        max_page = min(self.number + self.paginator._batch_size, self.paginator._get_known_page_count())
+        num_pages_per_batch = ceil(self.paginator._batch_size/float(self.paginator.per_page))
+        min_page = 1
+        max_page = min(self.number + num_pages_per_batch, self.paginator._get_known_page_count())
         return list(xrange(min_page, max_page + 1))
 
     def __repr__(self):
-        return '<UnifiedPage %s>' % self.number
+        return '<FilteredPage %s>' % self.number
 
 
