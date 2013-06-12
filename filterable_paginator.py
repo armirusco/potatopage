@@ -13,8 +13,12 @@ from django.core.paginator import (
 class CursorNotFound(Exception):
     pass
 
+
 class FilterablePaginator(Paginator):
-    def __init__(self, object_list, per_page, batch_size=1, *args, **kwargs):
+    def __init__(self, object_list, per_page, batch_size=None, filter_func=None, *args, **kwargs):
+
+        if batch_size is None:
+            batch_size = per_page
 
         self._batch_size = batch_size
 
@@ -51,7 +55,7 @@ class FilterablePaginator(Paginator):
         if not self.object_list.supports_cursors or cursor is None:
             return
 
-        logging.info("Storing cursor for page: %s" % (zero_based_obj))
+        logging.info("Storing cursor for obj: %s" % (zero_based_obj))
         key = "|".join([self.object_list.cache_key, str(zero_based_obj)])
         cache.set(key, cursor)
 
@@ -62,13 +66,6 @@ class FilterablePaginator(Paginator):
         if result is None:
             raise CursorNotFound("No cursor available for %s" % zero_based_obj)
         return result
-
-    def has_cursor_for_page(self, page):
-        try:
-            self._get_cursor(page-1)
-            return True
-        except CursorNotFound:
-            return False
 
     def validate_number(self, number):
         "Validates the given 1-based page number."
@@ -139,7 +136,12 @@ class FilterablePaginator(Paginator):
                 top = bottom + self._batch_size
                 results = self.object_list[bottom:top]
 
-            filtered_results = filter(self.filter_func, results)
+            # The filter function should be required, but let's leave it for now optional.
+            if self.filter_func:
+                filtered_results = filter(self.filter_func, results)
+            else:
+                filtered_results = results
+
             end_index = start_index + len(filtered_results)
 
             filtered_objects.append(filtered_results)
