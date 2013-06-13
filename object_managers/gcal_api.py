@@ -24,4 +24,31 @@ class GCalObjectManager(ObjectManager):
     def next_cursor(self):
         return self._latest_end_cursor
 
+    def __getitem__(self, value):
+        if isinstance(value, slice):
+            start, max_items = value.start, value.stop
+
+        if isinstance(value, int):
+            max_items = value
+
+        response = self._do_api_call(
+            maxResults=max_items,
+            pageToken=self._starting_cursor
+        )
+
+        obj_list = response.get('items')
+
+        if obj_list is None:
+            raise Exception('%s: No items found in response.' % self.__class__.__name__)
+
+        self._latest_end_cursor = response.get('nextPageToken')
+
+        return obj_list[value]
+
+
+    def _do_api_call(self, **new_params):
+        params = self.params.copy()
+        params.update(**new_params)
+
+        return self.query_func(**params).execute()
 
