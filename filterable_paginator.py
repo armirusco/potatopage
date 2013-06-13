@@ -21,6 +21,7 @@ class FilterablePaginator(Paginator):
             batch_size = per_page
 
         self._batch_size = batch_size
+        self.filter_func = filter_func
 
         if 'readahead' in kwargs.keys():
             raise TypeError('This paginator doesn\'t support the readahead argument.')
@@ -49,7 +50,7 @@ class FilterablePaginator(Paginator):
 
     def _put_known_obj_count(self, count):
         key = "|".join([self.object_list.cache_key, "KNOWN_OBJ_COUNT"])
-        return cache.put(key, count)
+        return cache.set(key, count)
 
     def _put_cursor(self, zero_based_obj, cursor):
         if not self.object_list.supports_cursors or cursor is None:
@@ -78,7 +79,20 @@ class FilterablePaginator(Paginator):
 
         return number
 
-    def _objs_with_cursors(self):
+    def _add_obj_with_cursor_to_cached_list(self, obj_pos):
+        obj_list = self._get_objs_with_cursors()
+        logging.info('Cursored objects before: %s' % obj_list)
+        if not obj_pos in obj_list:
+            obj_list.append(obj_pos)
+
+        logging.info('Cursored objects after: %s' % obj_list)
+        self._put_objs_with_cursors(obj_list)
+
+    def _put_objs_with_cursors(self, value):
+        key = "|".join([self.object_list.cache_key, 'CURSORED_OBJECTS'])
+        cache.set(key, value)
+
+    def _get_objs_with_cursors(self):
         key = "|".join([self.object_list.cache_key, 'CURSORED_OBJECTS'])
         result = cache.get(key)
         if result is None:
@@ -87,12 +101,17 @@ class FilterablePaginator(Paginator):
 
     def _find_nearest_obj_with_cursor(self, current_object):
         #Find the next object down that should be storing a cursor
-        cursored_objects = self._objs_with_cursors()
-        if not cursored_objects:
+        cursored_objects = self._get_objs_with_cursors()
+        obj_lower_than_current = None
+
+        if cursored_objects:
+            obj_lower_than_current = [c_obj for c_obj in cursored_objects
+                                      if c_obj <= current_object]
+
+        if not obj_lower_than_current:
             return 0
 
-        return max([c_obj for c_obj in cursored_objects if c_obj <=
-                    current_object])
+        return max(obj_lower_than_current)
 
     def _get_cursor_and_offset(self, start_index):
         """ Returns a cursor and offset for the page. page is zero-based! """
@@ -116,14 +135,17 @@ class FilterablePaginator(Paginator):
         return cursor, offset
 
     def page(self, number):
-        number = self.validate_number(number)
-        start_index = number * self.per_page
+        number = self.validate_number(number) - 1
+        page_start_index = number * self.per_page
+        logging.info('Page (%s) start index: %s' % (number, page_start_index))
 
-        start_cursor, offset = self._get_cursor_and_offset(start_index)
+        start_cursor, offset = self._get_cursor_and_offset(page_start_index)
         next_cursor = None
+        logging.info('Start cursor: %s' % start_cursor)
+        logging.info('Start offset: %s' % offset)
 
         filtered_objects = []
-        while len(filtered_objects) < self._batch_size:
+        while len(filtered_objects) < self._batch_size or len(filtered_objects) - offset < self.per_page:
             if next_cursor:
                 start_cursor = next_cursor
                 next_cursor = None
@@ -132,7 +154,7 @@ class FilterablePaginator(Paginator):
                 self.object_list.starting_cursor(start_cursor)
                 results = self.object_list[:self._batch_size]
             else:
-                bottom = start_index - offset
+                bottom = page_start_index - offset
                 top = bottom + self._batch_size
                 results = self.object_list[bottom:top]
 
@@ -142,9 +164,12 @@ class FilterablePaginator(Paginator):
             else:
                 filtered_results = results
 
-            end_index = start_index + len(filtered_results)
+            logging.info('filtered_results: %s' % len(filtered_results))
+            logging.info('results: %s' % len(results))
 
-            filtered_objects.append(filtered_results)
+            filtered_objects += filtered_results
+
+            next_page_start_index = (page_start_index - offset) + len(filtered_objects)
 
             if len(results) < self._batch_size:
                 break
@@ -152,7 +177,8 @@ class FilterablePaginator(Paginator):
             if self.object_list.supports_cursors:
                 #Store the cursor at the start of the NEXT batch
                 next_cursor = self.object_list.next_cursor
-                self._put_cursor(end_index, next_cursor)
+                self._add_obj_with_cursor_to_cached_list(next_page_start_index)
+                self._put_cursor(next_page_start_index, next_cursor)
 
         batch_result_count = len(filtered_objects)
 
@@ -164,14 +190,14 @@ class FilterablePaginator(Paginator):
             else:
                 raise EmptyPage('That page contains no results')
 
-        known_obj_count = int((start_index - offset) + batch_result_count)
+        known_obj_count = int((page_start_index - offset) + batch_result_count)
 
         if known_obj_count >= self._get_known_obj_count():
             if batch_result_count < self._batch_size:
                 # We reached the end of the object list.
                 self._put_final_obj(known_obj_count)
 
-            self._put_known_page_count(known_obj_count)
+            self._put_known_obj_count(known_obj_count)
         return FilteredPage(actual_results, number, self)
 
     def _get_count(self):

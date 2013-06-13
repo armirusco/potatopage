@@ -3,9 +3,19 @@ from .base import ObjectManager
 
 class GCalObjectManager(ObjectManager):
     supports_cursors = True
+    not_supported_params = ['maxResults', 'pageToken']
 
-    def __init__(self, resource_type, params, query_property='list'):
+    def __init__(self, service, resource_type, params, query_property='list'):
         self.resource_type = resource_type
+        # just like service.events()
+        self.resource = getattr(service, resource_type)()
+        # just like service.events().list
+        self.query_func = getattr(self.resource, query_property)
+
+        for key in self.not_supported_params:
+            if key in params.keys():
+                raise TypeError("%s is not supported by %s" % (key, self.__class__.__name__))
+
         self.params = params
         self.query_property = query_property
 
@@ -13,8 +23,8 @@ class GCalObjectManager(ObjectManager):
 
     def get_cache_key(self):
         cache_key_data = [self.resource_type, self.query_property]
-        cache_key_data += self.params.values()
-        return "|".join(cache_key_data)
+        cache_key_data += [str(value) for value in self.params.values()]
+        return "|".join(sorted(cache_key_data))
     cache_key = property(get_cache_key)
 
     def starting_cursor(self, cursor):
