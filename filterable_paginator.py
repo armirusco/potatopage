@@ -21,7 +21,7 @@ class FilterablePaginator(Paginator):
             batch_size = per_page
 
         self._batch_size = batch_size
-        self.filter_func = filter_func
+        self._filter_func = filter_func
 
         if 'readahead' in kwargs.keys():
             raise TypeError('This paginator doesn\'t support the readahead argument.')
@@ -135,12 +135,14 @@ class FilterablePaginator(Paginator):
         return cursor, offset
 
     def page(self, number):
-        number = self.validate_number(number) - 1
-        page_start_index = number * self.per_page
-        logging.info('Page (%s) start index: %s' % (number, page_start_index))
+        number = self.validate_number(number)
+        zero_based_number = number - 1
+        page_start_index = zero_based_number * self.per_page
+
 
         start_cursor, offset = self._get_cursor_and_offset(page_start_index)
         next_cursor = None
+
         logging.info('Start cursor: %s' % start_cursor)
         logging.info('Start offset: %s' % offset)
 
@@ -159,8 +161,8 @@ class FilterablePaginator(Paginator):
                 results = self.object_list[bottom:top]
 
             # The filter function should be required, but let's leave it for now optional.
-            if self.filter_func:
-                filtered_results = filter(self.filter_func, results)
+            if self._filter_func:
+                filtered_results = filter(self._filter_func, results)
             else:
                 filtered_results = results
 
@@ -196,8 +198,12 @@ class FilterablePaginator(Paginator):
             if batch_result_count < self._batch_size:
                 # We reached the end of the object list.
                 self._put_final_obj(known_obj_count)
+            elif next_cursor:
+                # Assuming there is another batch because of the cursor
+                known_obj_count += 1
 
             self._put_known_obj_count(known_obj_count)
+
         return FilteredPage(actual_results, number, self)
 
     def _get_count(self):
@@ -250,7 +256,7 @@ class FilteredPage(Page):
             this will generally be the same for the upper count, but the results
             will always start at 1.
         """
-        num_pages_per_batch = ceil(self.paginator._batch_size/float(self.paginator.per_page))
+        num_pages_per_batch = int(ceil(self.paginator._batch_size/float(self.paginator.per_page)))
         min_page = 1
         max_page = min(self.number + num_pages_per_batch, self.paginator._get_known_page_count())
         return list(xrange(min_page, max_page + 1))
