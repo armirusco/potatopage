@@ -147,6 +147,7 @@ class FilterablePaginator(Paginator):
 
         logging.info('Start cursor: %s' % start_cursor)
         logging.info('Start offset: %s' % offset)
+        start_bottom = page_start_index - offset
 
         filtered_objects = []
         while len(filtered_objects) < self._batch_size or len(filtered_objects) - offset < self.per_page:
@@ -158,7 +159,7 @@ class FilterablePaginator(Paginator):
                 self.object_list.starting_cursor(start_cursor)
                 results = self.object_list[:self._batch_size]
             else:
-                bottom = page_start_index - offset
+                bottom = start_bottom
                 top = bottom + self._batch_size
                 results = self.object_list[bottom:top]
 
@@ -183,9 +184,11 @@ class FilterablePaginator(Paginator):
                 next_cursor = self.object_list.next_cursor
                 self._add_obj_with_cursor_to_cached_list(next_page_start_index)
                 self._put_cursor(next_page_start_index, next_cursor)
+            else:
+                start_bottom = top
 
+        # What's the actual length of filtered objects (will need that for calculations)
         batch_result_count = len(filtered_objects)
-
         actual_results = filtered_objects[offset:offset + self.per_page]
 
         if not actual_results:
