@@ -4,6 +4,12 @@ from .base import ObjectManager
 
 
 class NdbModelObjectManager(ObjectManager):
+    """
+    An object manager for ndb models.
+
+    TODO: Proper testing, so far it has only be used to write a few tests for
+          the FilterablePaginator.
+    """
     supports_cursors = True
 
     def __init__(self, query):
@@ -26,6 +32,8 @@ class NdbModelObjectManager(ObjectManager):
 
     def starting_cursor(self, cursor):
         self._starting_cursor = Cursor(urlsafe=cursor)
+        # we need to set those to None, otherwise a second query with the same
+        # paginator would fail as the cursors are already set.
         self._latest_end_cursor = None
         self._contians_more_entities = None
 
@@ -52,13 +60,13 @@ class NdbModelObjectManager(ObjectManager):
 
         return entities[value]
 
-    def contains_more_objects(self, next_batch_cursor):
+    def contains_more_objects(self, next_cursor):
         if self._contians_more_entities is not None:
             return self._contians_more_entities
 
         entities, cursor, more = self.query.fetch_page(
             1,
-            start_cursor=next_batch_cursor
+            start_cursor=next_cursor
         )
 
         entity_list = list(entities)

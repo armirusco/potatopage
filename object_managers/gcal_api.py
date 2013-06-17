@@ -3,6 +3,7 @@ from .base import ObjectManager
 
 class GCalObjectManager(ObjectManager):
     supports_cursors = True
+    # Params that aren't supported because our ObjectManager sets them dynamically.
     not_supported_params = ['maxResults', 'pageToken']
 
     def __init__(self, service, resource_type, params, query_property='list'):
@@ -24,11 +25,12 @@ class GCalObjectManager(ObjectManager):
     def get_cache_key(self):
         cache_key_data = [self.resource_type, self.query_property]
         cache_key_data += [str(value) for value in self.params.values()]
-        return "|".join(sorted(cache_key_data))
+        return " ".join(sorted(cache_key_data)).replace(" ", "_")
     cache_key = property(get_cache_key)
 
     def starting_cursor(self, cursor):
         self._starting_cursor = cursor
+        self._latest_end_cursor = None
 
     @property
     def next_cursor(self):
@@ -62,3 +64,11 @@ class GCalObjectManager(ObjectManager):
 
         return self.query_func(**params).execute()
 
+    def contains_more_objects(self, next_cursor):
+        response = self._do_api_call(
+            maxResults=1,
+            pageToken=next_cursor
+        )
+
+        obj_list = response.get('items')
+        return bool(obj_list)

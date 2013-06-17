@@ -15,8 +15,27 @@ class CursorNotFound(Exception):
 
 
 class FilterablePaginator(Paginator):
-    def __init__(self, object_list, per_page, batch_size=None, filter_func=None, *args, **kwargs):
+    """
+    A paginator that allows you to filter queried results before adding them to
+    the list of objects.
 
+    N.B. Please take care using this, filtering means just the query for one
+         page may result in multiple queries to your object manager. I.e. it may
+         result in multiple queries to the DB, API or which ever manager you
+         may use.
+    """
+    def __init__(self, object_list, per_page, batch_size=None, filter_func=None, *args, **kwargs):
+        """
+        Params:
+        object_list: a potatopage.object_managers.base.ObjectManager sub-class
+        batch_size: this indicates how many objects should be queried when
+            retrieving objects via the object_manager and how many filtered
+            objects should be gathered before returning the page.
+        filter_func: a function that can be passed into python's built-in
+            filter() funciton. It should take the object as an argument and
+            return True or False depending on if that element should be included
+            or not.
+        """
         if batch_size is None:
             batch_size = per_page
 
@@ -44,6 +63,8 @@ class FilterablePaginator(Paginator):
 
     def _get_known_page_count(self):
         last_known_obj = self._get_known_obj_count()
+        if last_known_obj is None:
+            return None
         return int(ceil(last_known_obj/float(self.per_page)))
 
     def _get_known_obj_count(self):
@@ -70,24 +91,16 @@ class FilterablePaginator(Paginator):
             raise CursorNotFound("No cursor available for %s" % zero_based_obj)
         return result
 
-    def validate_number(self, number):
-        "Validates the given 1-based page number."
-        try:
-            number = int(number)
-        except (TypeError, ValueError):
-            raise PageNotAnInteger('That page number is not an integer')
-        if number < 1:
-            raise EmptyPage('That page number is less than 1')
-
-        return number
-
     def _add_obj_with_cursor_to_cached_list(self, obj_pos):
+        """
+        Small wrapper around the getting and setting of the updated list of
+        cursored objects. I.e. this list contains the zero-based index of each
+        object for which we have a cursor stored.
+        """
         obj_list = self._get_objs_with_cursors()
-        logging.info('Cursored objects before: %s' % obj_list)
         if not obj_pos in obj_list:
             obj_list.append(obj_pos)
 
-        logging.info('Cursored objects after: %s' % obj_list)
         self._put_objs_with_cursors(obj_list)
 
     def _put_objs_with_cursors(self, value):
@@ -101,14 +114,14 @@ class FilterablePaginator(Paginator):
             return []
         return result
 
-    def _find_nearest_obj_with_cursor(self, current_object):
+    def _find_nearest_obj_with_cursor(self, current_obj_index):
         #Find the next object down that should be storing a cursor
         cursored_objects = self._get_objs_with_cursors()
         obj_lower_than_current = None
 
         if cursored_objects:
             obj_lower_than_current = [c_obj for c_obj in cursored_objects
-                                      if c_obj <= current_object]
+                                      if c_obj <= current_obj_index]
 
         if not obj_lower_than_current:
             return 0
@@ -136,20 +149,32 @@ class FilterablePaginator(Paginator):
 
         return cursor, offset
 
+    def validate_number(self, number):
+        "Validates the given 1-based page number."
+        try:
+            number = int(number)
+        except (TypeError, ValueError):
+            raise PageNotAnInteger('That page number is not an integer')
+        if number < 1:
+            raise EmptyPage('That page number is less than 1')
+
+        return number
+
     def page(self, number):
         number = self.validate_number(number)
         zero_based_number = number - 1
         page_start_index = zero_based_number * self.per_page
 
-
         start_cursor, offset = self._get_cursor_and_offset(page_start_index)
         next_cursor = None
-
-        logging.info('Start cursor: %s' % start_cursor)
-        logging.info('Start offset: %s' % offset)
         start_bottom = page_start_index - offset
 
         filtered_objects = []
+        # Keep looping querying the object manager until:
+        # 1. You have a batch-length of filtered objects and enough objects to
+        #    fill a whole page.
+        # 2. The results of the query are less than a batch-length already
+        #    before filtering. I.e. you're at the end of the list.
         while len(filtered_objects) < self._batch_size or len(filtered_objects) - offset < self.per_page:
             if next_cursor:
                 start_cursor = next_cursor
@@ -169,14 +194,13 @@ class FilterablePaginator(Paginator):
             else:
                 filtered_results = results
 
-            logging.info('filtered_results: %s' % len(filtered_results))
-            logging.info('results: %s' % len(results))
-
             filtered_objects += filtered_results
 
             next_page_start_index = (page_start_index - offset) + len(filtered_objects)
 
             if len(results) < self._batch_size:
+                # This means we reached the end of the list.
+                next_cursor = None
                 break
 
             if self.object_list.supports_cursors:
@@ -199,6 +223,7 @@ class FilterablePaginator(Paginator):
 
         known_obj_count = int((page_start_index - offset) + batch_result_count)
 
+        # If we have a new highest known object index, we want to cache it.
         if known_obj_count >= self._get_known_obj_count():
             if batch_result_count < self._batch_size:
                 # We reached the end of the object list.
@@ -219,14 +244,15 @@ class FilterablePaginator(Paginator):
 
 
 class FilteredPage(Page):
-    def __init__(self, object_list, number, paginator):
-        super(FilteredPage, self).__init__(object_list, number, paginator)
+    """
+    A page containing objects that have been filtered by the FilterablePaginator.
+    """
 
     def __repr__(self):
         """ Overwrite paginator's repr, so no Exception gets thrown
             because the number of pages is unknown.
         """
-        return '<Page %s>' % (self.number)
+        return '<FilteredPage %s>' % (self.number)
 
     def has_next(self):
         return self.number < self.paginator._get_known_page_count()
@@ -252,21 +278,8 @@ class FilteredPage(Page):
             we get the following:
 
             [ 1, 2, *3*, 4, 5, 6, 7, 8 ]
-
-            If we then choose page 7, we get this:
-
-            [ 2, 3, 4, 5, 6, *7*, 8, 9, 10, 11, 12 ]
-
-            If limit_to_batch_size is False, then you always get all known pages
-            this will generally be the same for the upper count, but the results
-            will always start at 1.
         """
         num_pages_per_batch = int(ceil(self.paginator._batch_size/float(self.paginator.per_page)))
         min_page = 1
         max_page = min(self.number + num_pages_per_batch, self.paginator._get_known_page_count())
         return list(xrange(min_page, max_page + 1))
-
-    def __repr__(self):
-        return '<FilteredPage %s>' % self.number
-
-
