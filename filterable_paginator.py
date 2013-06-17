@@ -30,6 +30,8 @@ class FilterablePaginator(Paginator):
 
     def _get_final_page(self):
         final_obj = self._get_final_obj()
+        if final_obj is None:
+            return None
         return int(ceil(final_obj/float(self.per_page)))
 
     def _get_final_obj(self):
