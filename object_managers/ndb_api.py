@@ -24,7 +24,6 @@ class NdbModelObjectManager(ObjectManager):
             str(self.query._Query__ancestor),
             str(self.query._Query__filters),
             str(self.query._Query__orders),
-            str(self.query._Query__group_by),
             str(self.query._Query__app),
             str(self.query._Query__namespace)
         ]).replace(" ", "_")
