@@ -22,11 +22,11 @@ class GCalObjectManager(ObjectManager):
 
         self._starting_cursor = None
 
-    def get_cache_key(self):
+    @property
+    def cache_key(self):
         cache_key_data = [self.resource_type, self.query_property]
         cache_key_data += [str(value) for value in self.params.values()]
         return " ".join(sorted(cache_key_data)).replace(" ", "_")
-    cache_key = property(get_cache_key)
 
     def starting_cursor(self, cursor):
         self._starting_cursor = cursor
