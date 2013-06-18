@@ -5,13 +5,13 @@ class ObjectManager(object):
     """
     supports_cursors = None
 
-    def get_cache_key(self):
+    @property
+    def cache_key(self):
         """
         This should return a string that can be used as a unique cache key for
         a query considering its set properties like order, filters, etc.
         """
         raise NotImplemented()
-    cache_key = property(get_cache_key)
 
     def starting_cursor(self, cursor):
         """
@@ -34,16 +34,17 @@ class ObjectManager(object):
         """
         Doing the actual query to the given backend (DB, API, etc.), caching the
         next cursor so that it can be retrieved via self.next_cursor().
+
+        Returns a list of objects. (no queryset or similar please!)
         """
         raise NotImplemented()
 
-    def contains_more_objects(self, cursor):
+    def contains_more_objects(self, next_batch_cursor):
         """
         Makes another query to check if there are any more objects available
         doing the same query with the passed in cursor (usually equal to
         self.next_cursor)
 
-        N.B. This isn't used by the FilterablePaginator as it may cause many
-             more backend requests just to figure this out.
+        Returns a boolean stating if it contains more or not.
         """
         raise NotImplemented()

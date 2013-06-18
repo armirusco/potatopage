@@ -8,16 +8,15 @@ from django.core.paginator import (
     PageNotAnInteger,
     Page
 )
-from djangoappengine.db.utils import set_cursor, get_cursor
 
-from potatopage.utils import supports_cursor
+from .object_managers.base import ObjectManager
 
 
 class CursorNotFound(Exception):
     pass
 
 class UnifiedPaginator(Paginator):
-    def __init__(self, queryset, per_page, batch_size=1, readahead=True, *args, **kwargs):
+    def __init__(self, object_list, per_page, batch_size=1, readahead=True, *args, **kwargs):
         """
             batch_size - The steps (in pages) that cursors are cached. A batch_size
             of 1 means that a cursor is cached for the start of each page.
@@ -28,50 +27,44 @@ class UnifiedPaginator(Paginator):
             used on IN queries as that would be slow as molasses
         """
 
-        self._queryset = queryset
         self._batch_size = batch_size
-        self._query_supports_cursors = supports_cursor(queryset)
         self._readahead = readahead
 
-        if not self._query_supports_cursors:
+        if not isinstance(object_list, ObjectManager):
+            raise TypeError('%s doesn\'t support standard object lists. Please make sure it\'s a subclass of %s' % (self.__class__.__name__, ObjectManager.__name__))
+
+        if not object_list.supports_cursors:
             self._readahead = False
 
-        self._query_key = " ".join([
-            str(queryset.query.where),
-            str(queryset.query.order_by),
-            str(queryset.query.low_mark),
-            str(queryset.query.high_mark)
-        ]).replace(" ", "_")
-
-        super(UnifiedPaginator, self).__init__(queryset, per_page, *args, **kwargs)
+        super(UnifiedPaginator, self).__init__(object_list, per_page, *args, **kwargs)
 
     def _get_final_page(self):
-        key = "|".join([self._query_key, "LAST_PAGE"])
+        key = "|".join([self.object_list.cache_key, "LAST_PAGE"])
         return cache.get(key)
 
     def _put_final_page(self, page):
-        key = "|".join([self._query_key, "LAST_PAGE"])
+        key = "|".join([self.object_list.cache_key, "LAST_PAGE"])
         cache.set(key, page)
 
     def _get_known_page_count(self):
-        key = "|".join([self._query_key, "KNOWN_MAX"])
+        key = "|".join([self.object_list.cache_key, "KNOWN_MAX"])
         return cache.get(key)
 
     def _put_known_page_count(self, count):
-        key = "|".join([self._query_key, "KNOWN_MAX"])
+        key = "|".join([self.object_list.cache_key, "KNOWN_MAX"])
         return cache.set(key, count)
 
     def _put_cursor(self, zero_based_page, cursor):
-        if not self._query_supports_cursors or cursor is None:
+        if not self.object_list.supports_cursors or cursor is None:
             return
 
         logging.info("Storing cursor for page: %s" % (zero_based_page))
-        key = "|".join([self._query_key, str(zero_based_page)])
+        key = "|".join([self.object_list.cache_key, str(zero_based_page)])
         cache.set(key, cursor)
 
     def _get_cursor(self, zero_based_page):
         logging.info("Getting cursor for page: %s" % (zero_based_page))
-        key = "|".join([self._query_key, str(zero_based_page)])
+        key = "|".join([self.object_list.cache_key, str(zero_based_page)])
         result = cache.get(key)
         if result is None:
             raise CursorNotFound("No cursor available for %s" % zero_based_page)
@@ -109,7 +102,7 @@ class UnifiedPaginator(Paginator):
         cursor = None
         page_with_cursor = self._find_nearest_page_with_cursor(page)
 
-        if self._query_supports_cursors:
+        if self.object_list.supports_cursors:
             if page_with_cursor > 0:
                 try:
                     cursor = self._get_cursor(page_with_cursor)
@@ -133,23 +126,21 @@ class UnifiedPaginator(Paginator):
         cursor, offset = self._get_cursor_and_offset(number-1)
 
         if cursor:
-            #Read the entire batch size from the last cursor
-            query = self._queryset.all()[:(self.per_page * self._batch_size)]
-            query = set_cursor(query, start=cursor)
+            self.object_list.starting_cursor(cursor)
+            results = self.object_list[:(self.per_page * self._batch_size)]
         else:
             bottom = (self.per_page * self._find_nearest_page_with_cursor(number-1))
             top = bottom + (self.per_page * self._batch_size)
             #No cursor, so grab the full batch
-            query = self._queryset.all()[bottom:top]
+            results = self.object_list[bottom:top]
 
-        results = list(query) #Get the results
         self._process_batch_hook(results, number-1, cursor, offset)
 
         nearest_page_with_cursor = self._find_nearest_page_with_cursor(number-1)
         next_cursor = None
-        if self._query_supports_cursors:
+        if self.object_list.supports_cursors:
             #Store the cursor at the start of the NEXT batch
-            next_cursor = get_cursor(query)
+            next_cursor = self.object_list.next_cursor
             self._put_cursor(nearest_page_with_cursor + self._batch_size, next_cursor)
 
         batch_result_count = len(results)
@@ -166,15 +157,10 @@ class UnifiedPaginator(Paginator):
 
         if known_page_count >= self._get_known_page_count():
             if next_cursor and self._readahead:
-                query = self._queryset.all().values_list('pk')
-                query = set_cursor(query, start=next_cursor)
-                try:
-                    query[0]
-                except IndexError:
-                    self._put_final_page(known_page_count)
-                    pass
-                else:
+                if self.object_list.contains_more_objects(next_cursor):
                     known_page_count += 1
+                else:
+                    self._put_final_page(known_page_count)
             elif batch_result_count == self._batch_size * self.per_page:
                 # If we got back exactly the right amount, we assume there is at least
                 # one more page.
@@ -243,3 +229,24 @@ class UnifiedPage(Page):
     def __repr__(self):
         return '<UnifiedPage %s>' % self.number
 
+
+class DjangoNonrelPaginator(UnifiedPaginator):
+    """
+        Paginator that uses a Django-nonrel's GAE db queries to retrieve the objects.
+    """
+    def __init__(self, queryset, *args, **kwargs):
+        # Inline import otherwise importing the UnifiedPaginator would fail
+        # because of this import!
+        from object_managers.gae_db import DjangoNonrelManager
+        object_list = DjangoNonrelManager(queryset)
+        super(DjangoNonrelPaginator, self).__init__(object_list, *args, **kwargs)
+
+
+class GaeNdbPaginator(UnifiedPaginator):
+    """
+        Paginator using GAE's NDB.
+    """
+    def __init__(self, query, *args, **kwargs):
+        from object_managers.ndb_api import GaeNdbModelManager
+        object_list = GaeNdbModelManager(query)
+        super(GaeNdbPaginator, self).__init__(object_list, *args, **kwargs)
