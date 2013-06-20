@@ -7,6 +7,9 @@ class GCalObjectManager(ObjectManager):
     not_supported_params = ['maxResults', 'pageToken']
 
     def __init__(self, service, resource_type, params, query_property='list'):
+        """
+        Saving the service and making the query function ready to be used with the API.
+        """
         self.resource_type = resource_type
         # just like service.events()
         self.resource = getattr(service, resource_type)()
@@ -20,23 +23,40 @@ class GCalObjectManager(ObjectManager):
         self.params = params
         self.query_property = query_property
 
-        self._starting_cursor = None
+        self._starting_token = None
+        self._latest_end_token = None
 
-    def get_cache_key(self):
+    @property
+    def cache_key(self):
+        """
+        Creating a unique cache key for this call with exactly the given params.
+
+        Returns an unique string as cache key for this API call.
+        """
         cache_key_data = [self.resource_type, self.query_property]
         cache_key_data += [str(value) for value in self.params.values()]
         return " ".join(sorted(cache_key_data)).replace(" ", "_")
-    cache_key = property(get_cache_key)
 
     def starting_cursor(self, cursor):
-        self._starting_cursor = cursor
-        self._latest_end_cursor = None
+        """
+        Setting the start cursor. This needs to happen before we call the __getitem__()
+        """
+        self._starting_token = cursor
+        self._latest_end_token = None
 
     @property
     def next_cursor(self):
-        return self._latest_end_cursor
+        """
+        Returns the end cursor of the last made call to the API.
+        """
+        return self._latest_end_token
 
     def __getitem__(self, value):
+        """
+        Preparing the actual API call and modifying the result so that we return a list of objects, no meta-data.
+
+        Returns a list of objects, no meta data!
+        """
         if isinstance(value, slice):
             start, max_items = value.start, value.stop
 
@@ -45,26 +65,30 @@ class GCalObjectManager(ObjectManager):
 
         response = self._do_api_call(
             maxResults=max_items,
-            pageToken=self._starting_cursor
+            pageToken=self._starting_token
         )
 
         obj_list = response.get('items')
-
         if obj_list is None:
             raise Exception('%s: No items found in response.' % self.__class__.__name__)
 
-        self._latest_end_cursor = response.get('nextPageToken')
-
+        self._latest_end_token = response.get('nextPageToken')
         return obj_list[value]
 
 
     def _do_api_call(self, **new_params):
+        """
+        Doing the actual API call after updating the params.
+        """
         params = self.params.copy()
         params.update(**new_params)
 
         return self.query_func(**params).execute()
 
     def contains_more_objects(self, next_cursor):
+        """
+        Checking if the API gives us any more objects back for this set of params.
+        """
         response = self._do_api_call(
             maxResults=1,
             pageToken=next_cursor
